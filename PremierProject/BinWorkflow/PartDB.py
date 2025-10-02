@@ -22,6 +22,45 @@ class PartDatabase:
         self.password = password
         self.tablename=tablename
 
+    def get_row(self, key_value: str, key_column: str = "key_column"):
+        """
+        Fetch a single row from the table by a key column.
+        Returns a dictionary of column -> value, or None if not found.
+        """
+        conn = None
+        try:
+            conn = psycopg2.connect(
+                host=self.host,
+                port=self.port,
+                dbname=self.dbname,
+                user=self.user,
+                password=self.password
+            )
+            cur = conn.cursor()
+
+            query = f"""
+                SELECT * FROM {self.tablename}
+                WHERE "{key_column}" = %s
+                LIMIT 1;
+            """
+            cur.execute(query, (key_value,))
+            row = cur.fetchone()
+
+            if row:
+                # Get column names
+                colnames = [desc[0] for desc in cur.description]
+                # Return as dictionary
+                return dict(zip(colnames, row))
+            return None
+
+        except Exception as e:
+            print(f"Error fetching row for '{key_value}':", e)
+            return None
+        finally:
+            if conn:
+                conn.close()
+
+
     def get_part_details(self, part_number: str):
         """
         Fetch part details from table by PART NUMBER.

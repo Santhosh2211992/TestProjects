@@ -4,6 +4,9 @@ import time
 import paho.mqtt.client as mqtt
 from InventoryManager_module import InventoryManager
 from PartDB import PartDatabase
+from datetime import datetime
+from WeighingScale_module import WeighingScale
+import threading
 # ----------------------------
 # DB CONFIG
 # ----------------------------
@@ -13,6 +16,7 @@ POSTGRES_DB = "postgres"
 POSTGRES_USER = "postgres"
 POSTGRES_PASSWORD = "your-super-secret-and-long-postgres-password"
 TABLE_NAME = "public.bin_part_weight_db"
+EMPTY_WEIGHT_TABLE_NAME = "public.rfid_bin_db"
 
 # ----------------------------
 # MQTT CONFIG
@@ -76,6 +80,8 @@ class MockPrinter:
 class WorkflowDaemon:
     def __init__(self):
         self.client = mqtt.Client()
+        self.client.on_connect = self.on_connect
+        self.client.on_message = self.on_message
         self.client.connect(BROKER, PORT, 60)
         self.client.loop_start()
         db = PartDatabase(
@@ -86,17 +92,115 @@ class WorkflowDaemon:
             password=POSTGRES_PASSWORD,
             tablename=TABLE_NAME
             )
+        
+        empty_weight_db = PartDatabase(
+            host=POSTGRES_HOST,
+            port=POSTGRES_PORT,
+            dbname=POSTGRES_DB,
+            user=POSTGRES_USER,
+            password=POSTGRES_PASSWORD,
+            tablename=EMPTY_WEIGHT_TABLE_NAME
+            )
 
         # mock devices
         self.rfid = MockRFID()
         self.scale = MockScale()
         self.qr = QRScanner()
         self.db = db
+        self.empty_weight_db = empty_weight_db
         self.printer = MockPrinter()
+        self.scale_port="/dev/ttyUSB0"
+        self.weighing_scale = WeighingScale(
+            port=self.scale_port,
+            stable_seconds=2,
+            stable_callback=self.on_stable_weight
+        )
+        self.stable_weight = None
 
         self.job_count = 0
 
         self.task_order = ["job_allocation", "verification", "job_closeout", "dispatch"]
+        self.client.publish("rfid/192.168.1.102/connect", '{"type":"tcp","ip":"192.168.1.102","tcp_port":49152,"zone":"Zone E"}')
+
+    def on_stable_weight(self, weight):
+        print(f"Stable weight detected: {weight} kg")
+        self.stable_weight = weight
+
+    def get_stable_weight(self):
+        """
+        Starts the scale monitoring and waits until the weight stabilizes.
+        Returns the stable weight.
+        """
+        # Run monitor in a separate thread
+        self.monitor_thread = threading.Thread(target=self.weighing_scale.monitor)
+        self.monitor_thread.start()
+
+        # Main thread waits until stable weight is reported
+        while not self.weighing_scale.stable_reported:
+            time.sleep(0.1)
+
+        # Stop the monitor from main thread
+        self.weighing_scale.stop()
+        self.monitor_thread.join()
+        print("[InventoryManager] Scale monitoring stopped.")
+
+        return self.stable_weight
+
+    # --- Default Callbacks ---
+    def on_connect(self, client, userdata, flags, rc, properties=None):
+        if rc == 0:
+            print("✅ Connected to MQTT Broker")
+
+            # Subscribe using single-level wildcard for device IP
+            topic = "rfid/+/factory/tag/data"
+            self.client.subscribe(topic)
+            print(f"Subscribed to topic: {topic}")
+        else:
+            print(f"❌ Connection failed, return code {rc}")
+
+    def on_message(self, client, userdata, msg):
+        try:
+            # Decode the payload from bytes to string
+            payload_str = msg.payload.decode()
+            
+            # Parse JSON string into Python dictionary
+            data = json.loads(payload_str)
+
+            # Extract the fields
+            epc = data.get("epc")
+            count = data.get("count")
+            rssi = data.get("rssi")
+            last_seen_str = data.get("last_seen")
+            antenna = data.get("antenna")
+            location = data.get("location")
+
+            # Convert last_seen to datetime object
+            last_seen = datetime.fromisoformat(last_seen_str) if last_seen_str else None
+
+            print(f"EPC: {epc}, Count: {count}, RSSI: {rssi}, Last Seen: {last_seen}, Antenna: {antenna}, Location: {location}")
+
+            empty_bin_weight_data = self.empty_weight_db.get_row(key_value="E7 76 09 89 49 00 37 33 90 00 00 01", key_column="epc")
+            # print(f"empty bin weight data: {empty_bin_weight_data}")
+
+            # Suppose this comes from scale reading
+            loaded_bin_weight = self.get_stable_weight()
+
+            # Extract empty bin weight
+            empty_weight = empty_bin_weight_data.get("empty_bin_weight", 0)
+
+            # Compute net load
+            net_weight = loaded_bin_weight - empty_weight
+
+            print(f"Empty bin weight: {empty_weight:.3f} kg")
+            print(f"Loaded bin weight: {loaded_bin_weight:.3f} kg")
+            print(f"Net load weight: {net_weight:.3f} kg")
+
+            self.client.publish("rfid/192.168.1.102/stop_polling", '{}')
+
+        except json.JSONDecodeError as e:
+            print("Error decoding JSON:", e)
+        except Exception as e:
+            print("Unexpected error:", e)
 
     def run_task(self, task):
         data = {}
@@ -107,6 +211,7 @@ class WorkflowDaemon:
             # self.db.log_event(task, data)
 
         elif task == "verification":
+            self.client.publish("rfid/192.168.1.102/start_polling", '{}')
             gross = self.scale.get_weight()
             tare = self.scale.tare
             net = gross - tare
