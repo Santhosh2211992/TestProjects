@@ -306,7 +306,7 @@ if __name__ == "__main__":
     
     # Configuration
     DEVICE_ID = "scale_01"
-    PORT = "/dev/ttyUSB0"
+    PORT = "/dev/scale"
     BROKER = "localhost"
     
     # Create and start service

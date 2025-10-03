@@ -237,7 +237,7 @@ if __name__ == "__main__":
     import sys
     
     DEVICE_ID = "qr_scanner_01"
-    PORT = "/dev/ttyACM0"
+    PORT = "/dev/qr_code_reader"
     BROKER = "localhost"
     
     scanner_service = QRScannerMQTTService(
