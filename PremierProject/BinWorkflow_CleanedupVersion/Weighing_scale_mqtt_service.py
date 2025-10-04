@@ -63,7 +63,10 @@ class WeighingScaleMQTTService:
         self.topic_status = f"factory/scale/{device_id}/status"
         self.topic_cmd = f"factory/scale/{device_id}/cmd/#"
         self.topic_error = f"factory/scale/{device_id}/error"
-        
+
+        # Job Details
+        self.current_jobs_correlation_id = None
+
     def _on_connect(self, client, userdata, flags, rc):
         """MQTT connection callback"""
         if rc == 0:
@@ -84,6 +87,7 @@ class WeighingScaleMQTTService:
             logger.info(f"Received command: {command}")
             
             if command == "start_monitoring":
+                self.current_jobs_correlation_id = payload.get("correlation_id")
                 self.start_monitoring()
             elif command == "stop_monitoring":
                 self.stop_monitoring()
@@ -265,7 +269,8 @@ class WeighingScaleMQTTService:
             "unit": "kg",
             "stable": stable,
             "tare_weight": round(self.tare_weight, 3),
-            "net_weight": round(net_weight, 3) if net_weight is not None else None
+            "net_weight": round(net_weight, 3) if net_weight is not None else None,
+            "correlation_id": self.current_jobs_correlation_id
         }
         
         self.client.publish(self.topic_data, json.dumps(payload), qos=1)
@@ -306,7 +311,7 @@ if __name__ == "__main__":
     
     # Configuration
     DEVICE_ID = "scale_01"
-    PORT = "/dev/scale"
+    PORT = "/dev/weighing_scale"
     BROKER = "localhost"
     
     # Create and start service

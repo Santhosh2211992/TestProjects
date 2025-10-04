@@ -192,6 +192,9 @@ class RFIDReaderMQTTService:
         self.topic_status = f"factory/rfid/{device_id}/status"
         self.topic_cmd = f"factory/rfid/{device_id}/cmd/#"
         self.topic_error = f"factory/rfid/{device_id}/error"
+
+        # Job Details
+        self.current_jobs_correlation_id = None
     
     def _on_connect(self, client, userdata, flags, rc):
         """MQTT connection callback"""
@@ -217,6 +220,7 @@ class RFIDReaderMQTTService:
             elif command == "disconnect":
                 self._handle_disconnect()
             elif command == "start_polling":
+                self.current_jobs_correlation_id = payload.get("correlation_id")
                 self.start_polling()
             elif command == "stop_polling":
                 self.stop_polling()
@@ -494,6 +498,7 @@ class RFIDReaderMQTTService:
             "timestamp": datetime.now().isoformat(),
             "device_id": self.device_id,
             "single_read": single_read,
+            "correlation_id": self.current_jobs_correlation_id,
             **tag_data
         }
         

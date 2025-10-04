@@ -3,7 +3,7 @@ import psycopg2
 # -----------------------------
 # CONFIG
 # -----------------------------
-POSTGRES_HOST = "172.18.0.4"   # your Postgres container or host IP
+POSTGRES_HOST = "172.18.0.7"   # your Postgres container or host IP
 POSTGRES_PORT = 5432
 POSTGRES_DB = "postgres"
 POSTGRES_USER = "postgres"

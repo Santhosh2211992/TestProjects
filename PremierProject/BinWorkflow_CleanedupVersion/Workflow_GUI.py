@@ -1,5 +1,5 @@
 """
-Refactored Workflow GUI - MQTT Based
+Refactored Workflow GUI - MQTT Based (Dark Mode)
 Professional UI that communicates via MQTT instead of direct calls
 """
 
@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
     QPushButton, QTextEdit, QFrame, QProgressBar
 )
 from PySide6.QtCore import QTimer, Qt, Signal, QObject
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QFont, QPalette, QColor
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 from reportlab.platypus import Table, TableStyle
@@ -110,10 +110,6 @@ class WorkflowMQTTClient:
         self.client.loop_stop()
         self.client.disconnect()
     
-    def start_job(self):
-        """Send command to start new job"""
-        self.client.publish("factory/workflow/cmd/start_job", "{}", qos=1)
-    
     def abort_job(self):
         """Send command to abort current job"""
         self.client.publish("factory/workflow/cmd/abort_job", "{}", qos=1)
@@ -171,6 +167,9 @@ class WorkflowGUI(QWidget):
         self.setWindowTitle("Factory Workflow System - MQTT Edition")
         self.showFullScreen()
         
+        # Set dark background for main window
+        self.setStyleSheet("background-color: #1a1a1a;")
+        
         # Main layout
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(20, 20, 20, 20)
@@ -181,12 +180,12 @@ class WorkflowGUI(QWidget):
         # ==========================================
         status_frame = QFrame()
         status_frame.setFrameShape(QFrame.StyledPanel)
-        status_frame.setStyleSheet("background-color: #2c3e50; border-radius: 5px;")
+        status_frame.setStyleSheet("background-color: #2d2d2d; border-radius: 5px; border: 1px solid #404040;")
         status_layout = QHBoxLayout(status_frame)
         
         # Connection status indicator
         self.connection_label = QLabel("● Connecting...")
-        self.connection_label.setStyleSheet("color: orange; font-size: 14pt; font-weight: bold;")
+        self.connection_label.setStyleSheet("color: #ff9800; font-size: 14pt; font-weight: bold;")
         status_layout.addWidget(self.connection_label)
         
         status_layout.addStretch()
@@ -194,14 +193,14 @@ class WorkflowGUI(QWidget):
         # Workflow status
         self.status_label = QLabel("Status: Idle | Job: None | State: None")
         self.status_label.setAlignment(Qt.AlignCenter)
-        self.status_label.setStyleSheet("font-size: 20pt; font-weight: bold; color: white;")
+        self.status_label.setStyleSheet("font-size: 20pt; font-weight: bold; color: #e0e0e0;")
         status_layout.addWidget(self.status_label, stretch=2)
         
         status_layout.addStretch()
         
         # Job counter
         self.job_counter_label = QLabel("Jobs: 0")
-        self.job_counter_label.setStyleSheet("color: white; font-size: 14pt; font-weight: bold;")
+        self.job_counter_label.setStyleSheet("color: #e0e0e0; font-size: 14pt; font-weight: bold;")
         status_layout.addWidget(self.job_counter_label)
         
         main_layout.addWidget(status_frame)
@@ -219,7 +218,7 @@ class WorkflowGUI(QWidget):
         
         # Instructions
         inst_label = QLabel("Instructions")
-        inst_label.setStyleSheet("font-size: 16pt; font-weight: bold; color: #2c3e50;")
+        inst_label.setStyleSheet("font-size: 16pt; font-weight: bold; color: #e0e0e0;")
         left_layout.addWidget(inst_label)
         
         self.instructions_text = QTextEdit()
@@ -227,8 +226,9 @@ class WorkflowGUI(QWidget):
         self.instructions_text.setStyleSheet("""
             font-size: 16pt; 
             padding: 10px;
-            background-color: #ecf0f1;
-            border: 2px solid #bdc3c7;
+            background-color: #2d2d2d;
+            color: #e0e0e0;
+            border: 2px solid #404040;
             border-radius: 5px;
         """)
         self.instructions_text.setHtml("<i>Waiting to start job...</i>")
@@ -236,21 +236,23 @@ class WorkflowGUI(QWidget):
         
         # Progress bar
         progress_label = QLabel("Workflow Progress")
-        progress_label.setStyleSheet("font-size: 14pt; font-weight: bold; color: #2c3e50; margin-top: 10px;")
+        progress_label.setStyleSheet("font-size: 14pt; font-weight: bold; color: #e0e0e0; margin-top: 10px;")
         left_layout.addWidget(progress_label)
         
         self.progress_bar = QProgressBar()
         self.progress_bar.setStyleSheet("""
             QProgressBar {
-                border: 2px solid #bdc3c7;
+                border: 2px solid #404040;
                 border-radius: 5px;
                 text-align: center;
                 font-size: 14pt;
                 font-weight: bold;
                 height: 40px;
+                background-color: #2d2d2d;
+                color: #e0e0e0;
             }
             QProgressBar::chunk {
-                background-color: #27ae60;
+                background-color: #4caf50;
             }
         """)
         self.progress_bar.setRange(0, 4)
@@ -263,11 +265,12 @@ class WorkflowGUI(QWidget):
         self.result_indicator.setStyleSheet("""
             font-size: 24pt; 
             font-weight: bold; 
-            background-color: #95a5a6; 
-            color: white;
+            background-color: #424242; 
+            color: #e0e0e0;
             padding: 20px; 
             border-radius: 8px;
             margin-top: 10px;
+            border: 2px solid #505050;
         """)
         left_layout.addWidget(self.result_indicator)
         
@@ -279,7 +282,7 @@ class WorkflowGUI(QWidget):
         
         # Job details
         details_label = QLabel("Job Details")
-        details_label.setStyleSheet("font-size: 16pt; font-weight: bold; color: #2c3e50;")
+        details_label.setStyleSheet("font-size: 16pt; font-weight: bold; color: #e0e0e0;")
         right_layout.addWidget(details_label)
         
         self.job_details = QTextEdit()
@@ -287,8 +290,9 @@ class WorkflowGUI(QWidget):
         self.job_details.setStyleSheet("""
             font-size: 14pt;
             padding: 10px;
-            background-color: #ecf0f1;
-            border: 2px solid #bdc3c7;
+            background-color: #2d2d2d;
+            color: #e0e0e0;
+            border: 2px solid #404040;
             border-radius: 5px;
         """)
         self.job_details.setPlaceholderText("Job details will appear here...")
@@ -296,14 +300,14 @@ class WorkflowGUI(QWidget):
         
         # Task checklist
         checklist_label = QLabel("Task Checklist")
-        checklist_label.setStyleSheet("font-size: 16pt; font-weight: bold; color: #2c3e50; margin-top: 10px;")
+        checklist_label.setStyleSheet("font-size: 16pt; font-weight: bold; color: #e0e0e0; margin-top: 10px;")
         right_layout.addWidget(checklist_label)
         
         checklist_frame = QFrame()
         checklist_frame.setFrameShape(QFrame.StyledPanel)
         checklist_frame.setStyleSheet("""
-            background-color: #ecf0f1;
-            border: 2px solid #bdc3c7;
+            background-color: #2d2d2d;
+            border: 2px solid #404040;
             border-radius: 5px;
             padding: 10px;
         """)
@@ -312,7 +316,7 @@ class WorkflowGUI(QWidget):
         self.task_labels = {}
         for task_key, task_name in self.task_names.items():
             label = QLabel(f"○ {task_name}")
-            label.setStyleSheet("font-size: 16pt; color: #7f8c8d; padding: 5px;")
+            label.setStyleSheet("font-size: 16pt; color: #808080; padding: 5px;")
             self.task_labels[task_key] = label
             checklist_layout.addWidget(label)
         
@@ -330,49 +334,27 @@ class WorkflowGUI(QWidget):
         button_frame.setFrameShape(QFrame.StyledPanel)
         button_layout = QHBoxLayout(button_frame)
         
-        # Start Job button
-        self.start_button = QPushButton("START JOB")
-        self.start_button.setStyleSheet("""
-            QPushButton {
-                font-size: 18pt; 
-                background-color: #27ae60; 
-                color: white; 
-                padding: 15px;
-                border-radius: 5px;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #229954;
-            }
-            QPushButton:pressed {
-                background-color: #1e8449;
-            }
-            QPushButton:disabled {
-                background-color: #95a5a6;
-            }
-        """)
-        self.start_button.clicked.connect(self.start_job)
-        button_layout.addWidget(self.start_button)
-        
         # Abort Job button
         self.abort_button = QPushButton("ABORT JOB")
         self.abort_button.setStyleSheet("""
             QPushButton {
                 font-size: 18pt; 
-                background-color: #e67e22; 
+                background-color: #ff5722; 
                 color: white; 
                 padding: 15px;
                 border-radius: 5px;
                 font-weight: bold;
+                border: none;
             }
             QPushButton:hover {
-                background-color: #d68910;
+                background-color: #e64a19;
             }
             QPushButton:pressed {
-                background-color: #ca6f1e;
+                background-color: #d84315;
             }
             QPushButton:disabled {
-                background-color: #95a5a6;
+                background-color: #424242;
+                color: #808080;
             }
         """)
         self.abort_button.clicked.connect(self.abort_job)
@@ -384,17 +366,18 @@ class WorkflowGUI(QWidget):
         self.report_button.setStyleSheet("""
             QPushButton {
                 font-size: 18pt; 
-                background-color: #3498db; 
+                background-color: #2196f3; 
                 color: white; 
                 padding: 15px;
                 border-radius: 5px;
                 font-weight: bold;
+                border: none;
             }
             QPushButton:hover {
-                background-color: #2e86c1;
+                background-color: #1976d2;
             }
             QPushButton:pressed {
-                background-color: #2874a6;
+                background-color: #0d47a1;
             }
         """)
         self.report_button.clicked.connect(self.generate_report)
@@ -405,17 +388,18 @@ class WorkflowGUI(QWidget):
         self.quit_button.setStyleSheet("""
             QPushButton {
                 font-size: 18pt; 
-                background-color: #7f8c8d; 
+                background-color: #616161; 
                 color: white; 
                 padding: 15px;
                 border-radius: 5px;
                 font-weight: bold;
+                border: none;
             }
             QPushButton:hover {
-                background-color: #707b7c;
+                background-color: #757575;
             }
             QPushButton:pressed {
-                background-color: #616a6b;
+                background-color: #424242;
             }
         """)
         self.quit_button.clicked.connect(self.close)
@@ -445,25 +429,23 @@ class WorkflowGUI(QWidget):
         
         # Update instructions based on state
         state_instructions = {
-            "idle": "<i>System idle. Click START JOB to begin.</i>",
-            "job_allocation": "<b>Scan the Job QR code</b><br>Place the QR code under the scanner to allocate the job.",
-            "waiting_rfid": "<b>Place bin on station</b><br>Position the RFID-tagged bin for identification.",
-            "waiting_weight": "<b>Place parts in bin</b><br>Loading bin with parts. Wait for weight to stabilize...",
-            "verification": "<b>Verifying count...</b><br>System is verifying part count against target.",
-            "job_closeout": "<b>Closing job...</b><br>Finalizing job data and preparing for dispatch.",
-            "dispatch": "<b>Dispatching...</b><br>Printing release document and completing job.",
-            "error": "<b style='color: red;'>ERROR</b><br>An error occurred. Job has been aborted."
+            "idle": "<i style='color: #b0b0b0;'>System idle. Waiting for loaded bin (>1.25kg) to start new job...</i>",
+            "job_allocation": "<b style='color: #2196f3;'>Scan the Job QR code</b><br><span style='color: #b0b0b0;'>Scan the QR code using the scanner to complete the job allocation.</span>",
+            "waiting_rfid": "<b style='color: #2196f3;'>Identifying bin...</b><br><span style='color: #b0b0b0;'>Position the RFID-tagged bin for identification.</span>",
+            "waiting_weight": "<b style='color: #2196f3;'>Reading weight...</b><br><span style='color: #b0b0b0;'>Waiting for weight to stabilize...</span>",
+            "verification": "<b style='color: #ff9800;'>Verifying count...</b><br><span style='color: #b0b0b0;'>The system is verifying the part count against the target.</span>",
+            "job_closeout": "<b style='color: #ff9800;'>Closing job...</b><br><span style='color: #b0b0b0;'>Waiting for operator to remove bin from scale...</span>",
+            "dispatch": "<b style='color: #ff9800;'>Dispatching...</b><br><span style='color: #b0b0b0;'>Completing the job.</span>",
+            "error": "<b style='color: #f44336;'>ERROR</b><br><span style='color: #b0b0b0;'>An error has occurred. The job has been aborted.</span>"
         }
         
-        instruction = state_instructions.get(state, f"<i>State: {state}</i>")
+        instruction = state_instructions.get(state, f"<i style='color: #b0b0b0;'>State: {state}</i>")
         self.instructions_text.setHtml(instruction)
         
         # Update button states
         if state in ["idle", "error"]:
-            self.start_button.setEnabled(True)
             self.abort_button.setEnabled(False)
         else:
-            self.start_button.setEnabled(False)
             self.abort_button.setEnabled(True)
     
     def handle_task_ack(self, payload: Dict):
@@ -483,7 +465,7 @@ class WorkflowGUI(QWidget):
         if task in self.task_labels:
             label = self.task_labels[task]
             label.setText(f"✓ {self.task_names[task]}")
-            label.setStyleSheet("font-size: 16pt; color: #27ae60; padding: 5px; font-weight: bold;")
+            label.setStyleSheet("font-size: 16pt; color: #4caf50; padding: 5px; font-weight: bold;")
         
         # Update progress bar
         self.progress_bar.setValue(len(self.tasks_completed))
@@ -505,20 +487,22 @@ class WorkflowGUI(QWidget):
                 self.result_indicator.setStyleSheet("""
                     font-size: 24pt; 
                     font-weight: bold; 
-                    background-color: #27ae60; 
+                    background-color: #4caf50; 
                     color: white;
                     padding: 20px; 
                     border-radius: 8px;
+                    border: 2px solid #66bb6a;
                 """)
             else:
                 self.result_indicator.setText(f"FAIL ✗ ({actual}/{target})")
                 self.result_indicator.setStyleSheet("""
                     font-size: 24pt; 
                     font-weight: bold; 
-                    background-color: #e74c3c; 
+                    background-color: #f44336; 
                     color: white;
                     padding: 20px; 
                     border-radius: 8px;
+                    border: 2px solid #ef5350;
                 """)
     
     def handle_job_complete(self, payload: Dict):
@@ -533,8 +517,8 @@ class WorkflowGUI(QWidget):
         
         # Show completion message briefly
         self.instructions_text.setHtml(
-            "<b style='color: green;'>Job Completed Successfully!</b><br>"
-            "Starting next job in 3 seconds..."
+            "<b style='color: #4caf50;'>Job Completed Successfully!</b><br>"
+            "<span style='color: #b0b0b0;'>Starting next job in 3 seconds...</span>"
         )
         
         # Reset for next job after delay
@@ -546,17 +530,18 @@ class WorkflowGUI(QWidget):
         logger.error(f"Workflow error: {error_msg}")
         
         self.instructions_text.setHtml(
-            f"<b style='color: red;'>ERROR</b><br>{error_msg}"
+            f"<b style='color: #f44336;'>ERROR</b><br><span style='color: #b0b0b0;'>{error_msg}</span>"
         )
         
         self.result_indicator.setText("ERROR")
         self.result_indicator.setStyleSheet("""
             font-size: 24pt; 
             font-weight: bold; 
-            background-color: #e74c3c; 
+            background-color: #f44336; 
             color: white;
             padding: 20px; 
             border-radius: 8px;
+            border: 2px solid #ef5350;
         """)
     
     # ==========================================
@@ -565,7 +550,7 @@ class WorkflowGUI(QWidget):
     
     def display_job_details(self, data: Dict):
         """Display job/part details"""
-        details_html = "<b>Part Details:</b><br><br>"
+        details_html = "<b style='color: #2196f3;'>Part Details:</b><br><br>"
         
         field_map = {
             "SL NO": "Serial Number",
@@ -582,7 +567,7 @@ class WorkflowGUI(QWidget):
         
         for key, label in field_map.items():
             value = data.get(key, "N/A")
-            details_html += f"<b>{label}:</b> {value}<br>"
+            details_html += f"<b style='color: #b0b0b0;'>{label}:</b> <span style='color: #e0e0e0;'>{value}</span><br>"
         
         self.job_details.setHtml(details_html)
     
@@ -596,7 +581,7 @@ class WorkflowGUI(QWidget):
         for task_key, task_name in self.task_names.items():
             label = self.task_labels[task_key]
             label.setText(f"○ {task_name}")
-            label.setStyleSheet("font-size: 16pt; color: #7f8c8d; padding: 5px;")
+            label.setStyleSheet("font-size: 16pt; color: #808080; padding: 5px;")
         
         # Reset progress
         self.progress_bar.setValue(0)
@@ -606,10 +591,11 @@ class WorkflowGUI(QWidget):
         self.result_indicator.setStyleSheet("""
             font-size: 24pt; 
             font-weight: bold; 
-            background-color: #95a5a6; 
-            color: white;
+            background-color: #424242; 
+            color: #e0e0e0;
             padding: 20px; 
             border-radius: 8px;
+            border: 2px solid #505050;
         """)
         
         # Clear job details
@@ -623,24 +609,14 @@ class WorkflowGUI(QWidget):
         
         if self.mqtt.connected:
             self.connection_label.setText("● Connected")
-            self.connection_label.setStyleSheet("color: #27ae60; font-size: 14pt; font-weight: bold;")
+            self.connection_label.setStyleSheet("color: #4caf50; font-size: 14pt; font-weight: bold;")
         else:
             self.connection_label.setText("● Disconnected")
-            self.connection_label.setStyleSheet("color: #e74c3c; font-size: 14pt; font-weight: bold;")
+            self.connection_label.setStyleSheet("color: #f44336; font-size: 14pt; font-weight: bold;")
     
     # ==========================================
     # BUTTON HANDLERS
     # ==========================================
-    
-    def start_job(self):
-        """Start new job via MQTT"""
-        if not self.mqtt.connected:
-            self.instructions_text.setHtml("<b style='color: red;'>ERROR: Not connected to MQTT broker</b>")
-            return
-        
-        self.reset_for_next_job()
-        self.mqtt.start_job()
-        logger.info("Start job command sent")
     
     def abort_job(self):
         """Abort current job via MQTT"""
@@ -650,7 +626,7 @@ class WorkflowGUI(QWidget):
     def generate_report(self):
         """Generate PDF report of job history"""
         if not self.job_history:
-            self.instructions_text.setHtml("<b>No jobs to report</b>")
+            self.instructions_text.setHtml("<b style='color: #ff9800;'>No jobs to report</b>")
             return
         
         filename = f"workflow_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
@@ -711,14 +687,14 @@ class WorkflowGUI(QWidget):
             c.save()
             
             self.instructions_text.setHtml(
-                f"<b style='color: green;'>Report Generated</b><br>{filename}"
+                f"<b style='color: #4caf50;'>Report Generated</b><br><span style='color: #b0b0b0;'>{filename}</span>"
             )
             logger.info(f"Report generated: {filename}")
         
         except Exception as e:
             logger.error(f"Report generation error: {e}")
             self.instructions_text.setHtml(
-                f"<b style='color: red;'>Report Error</b><br>{str(e)}"
+                f"<b style='color: #f44336;'>Report Error</b><br><span style='color: #b0b0b0;'>{str(e)}</span>"
             )
     
     # ==========================================
@@ -735,8 +711,8 @@ class WorkflowGUI(QWidget):
                 self.update_connection_status()
             else:
                 self.instructions_text.setHtml(
-                    "<b style='color: red;'>Failed to connect to MQTT broker</b><br>"
-                    "Check if broker is running on localhost:1883"
+                    "<b style='color: #f44336;'>Failed to connect to MQTT broker</b><br>"
+                    "<span style='color: #b0b0b0;'>Check if broker is running on localhost:1883</span>"
                 )
     
     def closeEvent(self, event):
@@ -754,6 +730,23 @@ def main():
     
     # Set application style
     app.setStyle("Fusion")
+    
+    # Set dark palette
+    palette = QPalette()
+    palette.setColor(QPalette.Window, QColor(26, 26, 26))
+    palette.setColor(QPalette.WindowText, QColor(224, 224, 224))
+    palette.setColor(QPalette.Base, QColor(45, 45, 45))
+    palette.setColor(QPalette.AlternateBase, QColor(35, 35, 35))
+    palette.setColor(QPalette.ToolTipBase, QColor(224, 224, 224))
+    palette.setColor(QPalette.ToolTipText, QColor(224, 224, 224))
+    palette.setColor(QPalette.Text, QColor(224, 224, 224))
+    palette.setColor(QPalette.Button, QColor(45, 45, 45))
+    palette.setColor(QPalette.ButtonText, QColor(224, 224, 224))
+    palette.setColor(QPalette.BrightText, QColor(255, 255, 255))
+    palette.setColor(QPalette.Link, QColor(33, 150, 243))
+    palette.setColor(QPalette.Highlight, QColor(33, 150, 243))
+    palette.setColor(QPalette.HighlightedText, QColor(255, 255, 255))
+    app.setPalette(palette)
     
     # Create and show GUI
     window = WorkflowGUI()

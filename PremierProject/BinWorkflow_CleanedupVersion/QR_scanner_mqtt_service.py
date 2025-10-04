@@ -57,6 +57,9 @@ class QRScannerMQTTService:
         self.topic_status = f"factory/qr/{device_id}/status"
         self.topic_cmd = f"factory/qr/{device_id}/cmd/#"
         self.topic_error = f"factory/qr/{device_id}/error"
+
+        # Job Details
+        self.current_jobs_correlation_id = None
         
     def _on_connect(self, client, userdata, flags, rc):
         """MQTT connection callback"""
@@ -78,6 +81,7 @@ class QRScannerMQTTService:
             logger.info(f"Received command: {command}")
             
             if command == "start_scan":
+                self.current_jobs_correlation_id = payload.get("correlation_id")
                 self.start_scanning()
             elif command == "stop_scan":
                 self.stop_scanning()
@@ -196,7 +200,8 @@ class QRScannerMQTTService:
             "timestamp": datetime.now().isoformat(),
             "device_id": self.device_id,
             "qr_code": qr_code,
-            "cached": cached
+            "cached": cached,
+            "correlation_id": self.current_jobs_correlation_id
         }
         
         self.client.publish(self.topic_data, json.dumps(payload), qos=1)

@@ -13,10 +13,11 @@ from datetime import datetime
 from dataclasses import dataclass, asdict
 import paho.mqtt.client as mqtt
 import logging
+import threading
 
 from PartDB import PartDatabase
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 
@@ -55,6 +56,7 @@ class JobContext:
     rfid_epc: Optional[str] = None
     empty_bin_weight: Optional[float] = None
     gross_weight: Optional[float] = None
+    loaded_bin_weight: Optional[float] = None  # Weight with parts (for removal detection)
     net_weight: Optional[float] = None
     target_count: Optional[int] = None
     actual_count: Optional[int] = None
@@ -77,7 +79,18 @@ class WorkflowOrchestrator:
     Orchestrates workflow by coordinating devices via MQTT.
     No direct hardware instantiation - pure message-driven.
     """
-    
+        # Minimum duration configuration
+    MIN_STATE_DURATION = {
+        WorkflowState.JOB_ALLOCATION: 1.5,      # Let user see QR scan feedback
+        WorkflowState.WAITING_RFID: 1.0,        # Show RFID identification
+        WorkflowState.WAITING_WEIGHT: 2.0,      # Show weight reading
+        WorkflowState.VERIFICATION: 1.5,        # Show verification in progress
+        WorkflowState.JOB_CLOSEOUT: 1.5,        # Show job closing
+        WorkflowState.DISPATCH: 1.5,            # Show dispatch
+        WorkflowState.IDLE: 0.0,                # No delay for idle
+        WorkflowState.ERROR: 0.0,               # No delay for error
+    }
+
     def __init__(
         self,
         broker: str = "localhost",
@@ -106,9 +119,9 @@ class WorkflowOrchestrator:
         
         # Timeout management
         self.timeouts = {
-            "qr_scan": 30.0,
-            "rfid_read": 10.0,
-            "weight_stable": 15.0
+            "qr_scan": 86400.0, # 24 Hours
+            "rfid_read": 15.0, # 15 Seconds
+            "weight_stable": 15.0 # 15 Seconds
         }
         self.timeout_timer: Optional[float] = None
         
@@ -117,6 +130,15 @@ class WorkflowOrchestrator:
         self.client.on_connect = self._on_connect
         self.client.on_message = self._on_message
         self.connected = False
+
+        # Track state entry time
+        self.state_entry_time: Optional[float] = None
+        self.pending_transition: Optional[WorkflowState] = None
+        self.transition_timer: Optional[threading.Timer] = None
+        self._transition_lock = threading.RLock()
+
+        # Transition to idle
+        self._transition_to(WorkflowState.IDLE)
         
     def _on_connect(self, client, userdata, flags, rc):
         """MQTT connection callback"""
@@ -169,9 +191,7 @@ class WorkflowOrchestrator:
         """Handle workflow control commands"""
         logger.info(f"Workflow command: {command}")
         
-        if command == "start_job":
-            self.start_new_job()
-        elif command == "abort_job":
+        if command == "abort_job":
             self.abort_job()
         elif command == "get_status":
             self._publish_status(self.state)
@@ -182,10 +202,7 @@ class WorkflowOrchestrator:
     
     def _handle_device_data(self, device_type: str, device_id: str, payload: Dict):
         """Handle data from devices based on current state"""
-        
-        # Only process if we're expecting this data
-        if self.state == WorkflowState.IDLE:
-            return
+        print(f"[_handle_device_data] payload: {payload}")
         
         correlation_id = payload.get("correlation_id")
         if self.current_job and correlation_id != self.current_job.correlation_id:
@@ -197,7 +214,7 @@ class WorkflowOrchestrator:
             self._handle_qr_scan(payload)
         elif device_type == "rfid" and self.state == WorkflowState.WAITING_RFID:
             self._handle_rfid_read(payload)
-        elif device_type == "scale" and self.state == WorkflowState.WAITING_WEIGHT:
+        elif device_type == "scale" and (self.state == WorkflowState.WAITING_WEIGHT or self.state == WorkflowState.JOB_CLOSEOUT or self.state == WorkflowState.IDLE):
             self._handle_weight_reading(payload)
     
     def _handle_device_status(self, device_type: str, device_id: str, payload: Dict):
@@ -219,7 +236,7 @@ class WorkflowOrchestrator:
     
     def start_new_job(self):
         """Start a new job workflow"""
-        if self.state != WorkflowState.IDLE:
+        if not (self.state == WorkflowState.IDLE or self.state == WorkflowState.DISPATCH):
             logger.warning("Cannot start job - workflow already running")
             return
         
@@ -239,32 +256,152 @@ class WorkflowOrchestrator:
         self._transition_to(WorkflowState.JOB_ALLOCATION)
     
     def _transition_to(self, new_state: WorkflowState):
-        """Transition to new state and trigger actions"""
-        old_state = self.state
-        self.state = new_state
-        logger.info(f"State transition: {old_state} -> {new_state}")
+        """Transition to new state with minimum wait time"""
+        logger.debug(f"[TRANSITION] _transition_to called: {self.state} -> {new_state}")
         
-        # Start timeout timer
-        self._start_timeout()
+        # ===== Thread-safe transition handling =====
+        with self._transition_lock:
+            logger.debug(f"[TRANSITION] Lock acquired for transition to {new_state}")
+            
+            # Cancel any pending transition
+            if self.transition_timer:
+                logger.debug(f"[TRANSITION] Canceling pending transition to {self.pending_transition}")
+                self.transition_timer.cancel()
+                self.transition_timer = None
+            
+            old_state = self.state
+            logger.debug(f"[TRANSITION] Current state: {old_state}, Target state: {new_state}")
+            
+            # ===== Calculate time spent in current state =====
+            time_in_state = 0.0
+            if self.state_entry_time is not None:
+                time_in_state = time.time() - self.state_entry_time
+                logger.debug(f"[TRANSITION] Time in {old_state}: {time_in_state:.3f}s (entered at {self.state_entry_time:.3f})")
+            else:
+                logger.debug(f"[TRANSITION] No entry time recorded for {old_state}")
+            
+            # ===== Get minimum duration for current state =====
+            min_duration = self.MIN_STATE_DURATION.get(old_state, 0.0)
+            logger.debug(f"[TRANSITION] Minimum duration for {old_state}: {min_duration:.2f}s")
+            
+            # ===== Calculate remaining time needed =====
+            remaining_time = max(0.0, min_duration - time_in_state)
+            logger.debug(f"[TRANSITION] Remaining time needed: {remaining_time:.3f}s")
+            
+            # ===== Delay transition if minimum duration not met =====
+            if remaining_time > 0:
+                logger.info(
+                    f"⏱️ Delaying transition {old_state.value} -> {new_state.value} "
+                    f"by {remaining_time:.2f}s (spent {time_in_state:.2f}s, "
+                    f"min {min_duration:.2f}s)"
+                )
+                logger.debug(f"[TRANSITION] Setting up timer for {remaining_time:.3f}s delay")
+                
+                self.pending_transition = new_state
+                self.transition_timer = threading.Timer(
+                    remaining_time,
+                    lambda: self._execute_transition(new_state)
+                )
+                self.transition_timer.start()
+                logger.debug(f"[TRANSITION] Timer started for delayed transition to {new_state}")
+            else:
+                logger.debug(f"[TRANSITION] Minimum duration met ({time_in_state:.2f}s >= {min_duration:.2f}s), executing immediately")
+                # Execute transition immediately if minimum time met
+                self._execute_transition(new_state)
+
+    # ===== Separated execution logic =====
+    def _execute_transition(self, new_state: WorkflowState):
+        """Execute the actual state transition"""
+        logger.debug(f"[EXECUTE] _execute_transition called for {new_state}")
         
-        # Publish state change
-        self._publish_status(new_state)
+        with self._transition_lock:
+            logger.debug(f"[EXECUTE] Lock acquired for executing transition to {new_state}")
+            
+            old_state = self.state
+            self.state = new_state
+            
+            # ===== Record entry time for this state =====
+            self.state_entry_time = time.time()
+            logger.debug(f"[EXECUTE] State entry time recorded: {self.state_entry_time:.3f}")
+            
+            # Clear pending transition
+            was_pending = self.pending_transition
+            self.pending_transition = None
+            if was_pending:
+                logger.debug(f"[EXECUTE] Cleared pending transition: {was_pending}")
+            
+            logger.info(f"✅ State transition executed: {old_state.value} -> {new_state.value}")
+            
+            # Start timeout timer
+            logger.debug(f"[EXECUTE] Starting timeout timer for {new_state}")
+            self._start_timeout()
+            
+            # Publish state change
+            logger.debug(f"[EXECUTE] Publishing status for {new_state}")
+            self._publish_status(new_state)
+            
+            # Trigger state entry actions (same as before)
+            logger.debug(f"[EXECUTE] Triggering entry action for {new_state}")
+            if new_state == WorkflowState.JOB_ALLOCATION:
+                logger.debug(f"[EXECUTE] Calling _enter_job_allocation()")
+                self._enter_job_allocation()
+            elif new_state == WorkflowState.WAITING_RFID:
+                logger.debug(f"[EXECUTE] Calling _enter_waiting_rfid()")
+                self._enter_waiting_rfid()
+            elif new_state == WorkflowState.WAITING_WEIGHT:
+                logger.debug(f"[EXECUTE] Calling _enter_waiting_weight()")
+                self._enter_waiting_weight()
+            elif new_state == WorkflowState.VERIFICATION:
+                logger.debug(f"[EXECUTE] Calling _enter_verification()")
+                self._enter_verification()
+            elif new_state == WorkflowState.JOB_CLOSEOUT:
+                logger.debug(f"[EXECUTE] Calling _enter_job_closeout()")
+                self._enter_job_closeout()
+            elif new_state == WorkflowState.DISPATCH:
+                logger.debug(f"[EXECUTE] Calling _enter_dispatch()")
+                self._enter_dispatch()
+            elif new_state == WorkflowState.IDLE:
+                logger.debug(f"[EXECUTE] Calling _enter_idle()")
+                self._enter_idle()
+            
+            logger.debug(f"[EXECUTE] Transition to {new_state} complete")
+
+    # ===== Force transition method for emergencies =====
+    def force_transition(self, new_state: WorkflowState):
+        """Force immediate transition (for emergency/error states)"""
+        logger.warning(f"⚠️ FORCE TRANSITION requested: {self.state.value} -> {new_state.value}")
         
-        # Trigger state entry actions
-        if new_state == WorkflowState.JOB_ALLOCATION:
-            self._enter_job_allocation()
-        elif new_state == WorkflowState.WAITING_RFID:
-            self._enter_waiting_rfid()
-        elif new_state == WorkflowState.WAITING_WEIGHT:
-            self._enter_waiting_weight()
-        elif new_state == WorkflowState.VERIFICATION:
-            self._enter_verification()
-        elif new_state == WorkflowState.JOB_CLOSEOUT:
-            self._enter_job_closeout()
-        elif new_state == WorkflowState.DISPATCH:
-            self._enter_dispatch()
-        elif new_state == WorkflowState.IDLE:
-            self._enter_idle()
+        with self._transition_lock:
+            logger.debug(f"[FORCE] Lock acquired for force transition to {new_state}")
+            
+            if self.transition_timer:
+                logger.debug(f"[FORCE] Canceling pending timer for {self.pending_transition}")
+                self.transition_timer.cancel()
+                self.transition_timer = None
+            else:
+                logger.debug(f"[FORCE] No pending timer to cancel")
+            
+            logger.debug(f"[FORCE] Executing immediate transition to {new_state}")
+            self._execute_transition(new_state)
+            logger.info(f"✅ Force transition complete: -> {new_state.value}")
+
+    # ===== Cleanup method =====
+    def cleanup(self):
+        """Cleanup timers on shutdown"""
+        logger.info(f"🧹 Cleanup called - current state: {self.state.value}")
+        
+        with self._transition_lock:
+            logger.debug(f"[CLEANUP] Lock acquired")
+            
+            if self.transition_timer:
+                logger.info(f"[CLEANUP] Canceling pending transition to {self.pending_transition}")
+                self.transition_timer.cancel()
+                self.transition_timer = None
+                logger.debug(f"[CLEANUP] Timer canceled and cleared")
+            else:
+                logger.debug(f"[CLEANUP] No pending timer to cancel")
+            
+            logger.info(f"✅ Cleanup complete")
     
     def _enter_job_allocation(self):
         """Start QR code scanning for job allocation"""
@@ -365,25 +502,70 @@ class WorkflowOrchestrator:
     def _handle_weight_reading(self, payload: Dict):
         """Process weight reading from scale"""
         stable = payload.get("stable", False)
-        
-        if not stable:
-            return  # Wait for stable weight
-        
         weight = payload.get("weight")
         net_weight = payload.get("net_weight")
         
-        logger.info(f"Stable weight: {weight:.3f} kg (net: {net_weight:.3f} kg)")
+        # ← Handle different states
+        if self.state == WorkflowState.WAITING_WEIGHT:
+            # Original behavior - waiting for loaded bin
+            if not stable:
+                return  # Wait for stable weight
+            
+            logger.info(f"Stable weight: {weight:.3f} kg (net: {net_weight:.3f} kg)")
+            
+            self.current_job.gross_weight = weight
+            self.current_job.net_weight = net_weight
+            
+            # Stop scale monitoring
+            scale_device = self.devices.get("scale", "scale_01")
+            self._send_device_command("scale", scale_device, "stop_monitoring")
+            
+            # Move to verification
+            self._transition_to(WorkflowState.VERIFICATION)
         
-        self.current_job.gross_weight = weight
-        self.current_job.net_weight = net_weight
-        
-        # Stop scale monitoring
-        scale_device = self.devices.get("scale", "scale_01")
-        self._send_device_command("scale", scale_device, "stop_monitoring")
-        
-        # Move to verification
-        self._transition_to(WorkflowState.VERIFICATION)
-    
+        # Added for bin removal detection
+        elif self.state == WorkflowState.JOB_CLOSEOUT:
+            # waiting for bin removal
+            if not stable:
+                return  # Wait for stable weight
+            
+            # Check if bin has been removed (weight dropped significantly)
+            loaded_weight = self.current_job.loaded_bin_weight
+            weight_threshold = loaded_weight * 0.3  # If weight < 30% of loaded weight
+            
+            print(f"[Debug][_handle_weight_reading] Stable weight: {weight:.3f} kg (net: {net_weight:.3f} kg)")
+            print(f"[Debug][_handle_weight_reading] weight_threshold: {weight_threshold:.3f} kg")
+            if weight < weight_threshold:
+                print(f"[Debug][_handle_weight_reading] Bin removed detected: {weight:.3f} kg (was {loaded_weight:.3f} kg)")
+                logger.info(f"Bin removed detected: {weight:.3f} kg (was {loaded_weight:.3f} kg)")
+                
+                # Stop scale monitoring
+                scale_device = self.devices.get("scale", "scale_01")
+                self._send_device_command("scale", scale_device, "stop_monitoring")
+                
+                # Now transition to dispatch
+                self._transition_to(WorkflowState.DISPATCH)
+            else:
+                # Still waiting for removal
+                logger.debug(f"Bin still on scale: {weight:.3f} kg (waiting for removal)")
+        elif self.state == WorkflowState.IDLE:
+            if not stable:
+                return  # Wait for stable weight
+            
+            # Check if a loaded bin is placed (weight > 1.25 kg)
+            if weight >= 1.25:
+                logger.info(f"Loaded bin detected ({weight:.3f} kg) - auto-starting new job")
+                
+                # Stop scale monitoring (will restart in appropriate state)
+                scale_device = self.devices.get("scale", "scale_01")
+                self._send_device_command("scale", scale_device, "stop_monitoring")
+                
+                # Start new job automatically
+                self.start_new_job()
+            else:
+                # Empty scale or light object
+                logger.debug(f"Scale weight: {weight:.3f} kg (waiting for loaded bin >= 1.25kg)")
+
     def _enter_verification(self):
         """Verify part count against target"""
         if not self.current_job.part_details:
@@ -421,7 +603,7 @@ class WorkflowOrchestrator:
         self._transition_to(WorkflowState.JOB_CLOSEOUT)
     
     def _enter_job_closeout(self):
-        """Close out the job"""
+        """Close out the job and wait for bin removal"""  # ← Updated docstring
         closeout_data = {
             "job_id": self.current_job.job_id,
             "part_number": self.current_job.part_number,
@@ -431,9 +613,20 @@ class WorkflowOrchestrator:
         }
         
         self._publish_task_ack("job_closeout", True, closeout_data)
+
+        # Cancel Timeout
+        self._cancel_timeout()
         
-        # Move to dispatch
-        self._transition_to(WorkflowState.DISPATCH)
+        # Store the loaded bin weight for comparison
+        self.current_job.loaded_bin_weight = self.current_job.gross_weight
+        
+        # Start monitoring scale for bin removal
+        scale_device = self.devices.get("scale", "scale_01")
+        self._send_device_command("scale", scale_device, "start_monitoring")
+        
+        # Update state - we'll wait in job_closeout for bin removal
+        logger.info("Waiting for operator to remove bin from scale...")
+        
     
     def _enter_dispatch(self):
         """Dispatch bin and print label"""
@@ -458,11 +651,17 @@ class WorkflowOrchestrator:
         
         # Complete job
         self._complete_job()
+
+        self._transition_to(WorkflowState.IDLE)
     
     def _enter_idle(self):
         """Return to idle state"""
         logger.info("Workflow idle")
-        self._cancel_timeout()
+        
+        # Start monitoring scale for automatic job start
+        scale_device = self.devices.get("scale", "scale_01")
+        self._send_device_command("scale", scale_device, "start_monitoring")
+        logger.info("Monitoring scale - waiting for loaded bin (>1.25kg) to start new job...")
     
     def _complete_job(self):
         """Complete current job and return to idle"""
@@ -473,9 +672,8 @@ class WorkflowOrchestrator:
             
             # Publish job summary
             self._publish_job_summary(self.current_job)
-        
+
         self.current_job = None
-        self._transition_to(WorkflowState.IDLE)
     
     def _transition_to_error(self, error_msg: str):
         """Transition to error state"""
@@ -515,7 +713,7 @@ class WorkflowOrchestrator:
             WorkflowState.WAITING_RFID: self.timeouts["rfid_read"],
             WorkflowState.WAITING_WEIGHT: self.timeouts["weight_stable"]
         }
-        
+        # print(f"[Debug][_start_timeout] self.state: {self.state}")
         timeout = timeout_map.get(self.state)
         if timeout:
             self.timeout_timer = time.time() + timeout
@@ -571,6 +769,7 @@ class WorkflowOrchestrator:
             "timestamp": datetime.now().isoformat(),
             "job_id": self.current_job.job_id if self.current_job else None
         }
+        print(f"[DEBUG][_publish_task_ack] topic: factory/workflow/ack/, payload: {payload}")
         self.client.publish("factory/workflow/ack", json.dumps(payload), qos=1)
     
     def _publish_job_summary(self, job: JobContext):
@@ -637,19 +836,19 @@ if __name__ == "__main__":
     # Configuration
     db_config = {
         "part_db": {
-            "host": "172.18.0.16",
+            "host": "172.18.0.7",
             "port": 5432,
             "dbname": "postgres",
             "user": "postgres",
-            "password": "password",
-            "tablename": "part_weight_db"
+            "password": "your-super-secret-and-long-postgres-password",
+            "tablename": "bin_part_weight_db"
         },
         "bin_db": {
-            "host": "172.18.0.16",
+            "host": "172.18.0.7",
             "port": 5432,
             "dbname": "postgres",
             "user": "postgres",
-            "password": "password",
+            "password": "your-super-secret-and-long-postgres-password",
             "tablename": "rfid_bin_db"
         }
     }
@@ -678,9 +877,6 @@ if __name__ == "__main__":
 """
 # Start orchestrator:
 python workflow_orchestrator.py
-
-# Start a new job:
-mosquitto_pub -t factory/workflow/cmd/start_job -m '{}'
 
 # Abort job:
 mosquitto_pub -t factory/workflow/cmd/abort_job -m '{}'
